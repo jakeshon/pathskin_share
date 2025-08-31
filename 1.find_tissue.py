@@ -30,6 +30,7 @@ from pathlib import Path
 import glob
 from tqdm import tqdm
 import shutil
+import argparse
 
 def merge_overlapping_boxes(boxes):
     """
@@ -239,9 +240,24 @@ def main():
     - Perform region of interest detection for each file
     - Save results as images and Excel files
     """
-    # Set input/output paths
-    input_dir = "/Users/shon/ws/ws_proj/research/pathskin/data/2025년 5월 CM pathology annotated data"
-    output_base_dir = "/Users/shon/ws/ws_proj/research/pathskin/output/ex01_02/1.find_tissue"
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Detect tissue regions in SVS files')
+    parser.add_argument('--input_dir', type=str, required=True,
+                        help='Input directory containing SVS files')
+    parser.add_argument('--output_dir', type=str, required=True,
+                        help='Output directory for results')
+    parser.add_argument('--recursive', action='store_true', default=True,
+                        help='Search for SVS files recursively in subdirectories (default: True)')
+    
+    args = parser.parse_args()
+    
+    # Set input/output paths from arguments
+    input_dir = args.input_dir
+    output_base_dir = args.output_dir
+    
+    # Validate input directory
+    if not os.path.exists(input_dir):
+        raise ValueError(f"Input directory does not exist: {input_dir}")
     
     # Delete and recreate output directory
     if os.path.exists(output_base_dir):
@@ -249,7 +265,16 @@ def main():
     os.makedirs(output_base_dir, exist_ok=True)
     
     # Find all SVS files
-    svs_files = glob.glob(os.path.join(input_dir, "**/*.svs"), recursive=True)
+    if args.recursive:
+        svs_files = glob.glob(os.path.join(input_dir, "**/*.svs"), recursive=True)
+    else:
+        svs_files = glob.glob(os.path.join(input_dir, "*.svs"))
+    
+    if not svs_files:
+        print(f"No SVS files found in {input_dir}")
+        return
+    
+    print(f"Found {len(svs_files)} SVS files to process")
     
     # Create DataFrame to store results
     results = []
@@ -358,6 +383,7 @@ def main():
     infos_df.to_excel(infos_excel_path, index=False, engine='openpyxl')
     
     print(f"Processing completed. Results saved to {output_base_dir}")
+    print(f"Total tissue regions detected: {len(results)}")
 
 if __name__ == "__main__":
     main()

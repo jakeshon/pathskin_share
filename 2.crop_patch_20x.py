@@ -32,6 +32,7 @@ import os
 import json
 from pathlib import Path
 from tqdm import tqdm
+import argparse
 
 def get_level_for_magnification(slide, target_magnification):
     """
@@ -303,18 +304,47 @@ def extract_tissue_patch(svs_path, bbox, output_dir, file_id, tissue_no, target_
     return patch_info_list
 
 def main():
-    # Set input/output paths
-    input_dir = "/Users/shon/ws/ws_proj/research/pathskin/data/2025년 5월 CM pathology annotated data"
-    bbox_excel = "/Users/shon/ws/ws_proj/research/pathskin/output/ex01_02/1.find_tissue/bboxes.xlsx"
-    output_dir = "/Users/shon/ws/ws_proj/research/pathskin/output/ex01_02/2.crop_patch_20x"
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Extract 20x magnification patches from tissue regions')
+    parser.add_argument('--input_dir', type=str, required=True,
+                        help='Input directory containing SVS files')
+    parser.add_argument('--bbox_excel', type=str, required=True,
+                        help='Path to bboxes.xlsx file from Stage 1')
+    parser.add_argument('--output_dir', type=str, required=True,
+                        help='Output directory for results')
+    parser.add_argument('--magnification', type=int, default=20,
+                        help='Target magnification (default: 20)')
+    parser.add_argument('--patch_size', type=int, default=512,
+                        help='Patch size in pixels (default: 512)')
+    parser.add_argument('--clear_masks', action='store_true',
+                        help='Clear existing masks directory before processing')
+    
+    args = parser.parse_args()
+    
+    # Set input/output paths from arguments
+    input_dir = args.input_dir
+    bbox_excel = args.bbox_excel
+    output_dir = args.output_dir
+    
+    # Validate input paths
+    if not os.path.exists(input_dir):
+        raise ValueError(f"Input directory does not exist: {input_dir}")
+    if not os.path.exists(bbox_excel):
+        raise ValueError(f"Bbox Excel file does not exist: {bbox_excel}")
     
     # Create output directory
-    # shutil.rmtree(output_dir, ignore_errors=True)
-    shutil.rmtree(output_dir + "/masks", ignore_errors=True)
+    if args.clear_masks:
+        shutil.rmtree(output_dir + "/masks", ignore_errors=True)
     os.makedirs(output_dir, exist_ok=True)
     
     # Read Excel file
     df = pd.read_excel(bbox_excel)
+    
+    if df.empty:
+        print("No tissue regions found in the Excel file")
+        return
+    
+    print(f"Found {len(df)} tissue regions to process")
     
     # List to store patch information
     patch_info_list = []
@@ -341,18 +371,25 @@ def main():
         
         try:
             # Extract patches
-            patch_info = extract_tissue_patch(svs_path, bbox, output_dir, file_id, tissue_no)
+            patch_info = extract_tissue_patch(svs_path, bbox, output_dir, file_id, tissue_no, args.magnification)
             patch_info_list.extend(patch_info)
         except Exception as e:
             print(f"Error processing {file_id} tissue {tissue_no}: {str(e)}")
     
     # Convert patch information to DataFrame
     patch_df = pd.DataFrame(patch_info_list)
+    
+    if patch_df.empty:
+        print("No patches were extracted")
+        return
+    
     patch_df.to_excel(os.path.join(output_dir, 'bboxes_patch_20x.xlsx'), index=False)
     
     print("\nPatch information has been saved to bboxes_patch_20x.xlsx file.")
     print("\nPatch information summary:")
     print(f"Total patches: {len(patch_df)}")
+    print(f"Files processed: {patch_df['file_id'].nunique()}")
+    print(f"Tissue regions processed: {patch_df['tissue_no'].nunique()}")
     print(patch_df.head())
 
 if __name__ == "__main__":

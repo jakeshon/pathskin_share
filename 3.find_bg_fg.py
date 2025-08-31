@@ -24,6 +24,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import os
+import argparse
 
 def calculate_image_statistics(image):
     """Calculate image statistics
@@ -101,86 +102,151 @@ def main():
     3. Process each patch image (calculate statistics, separate background/foreground)
     4. Save results (mask image, Excel file)
     """
-    # Set base folder
-    base_dir = "/Users/shon/ws/ws_proj/research/pathskin/output/ex01_02/2.crop_patch_20x"
-    output_dir = "/Users/shon/ws/ws_proj/research/pathskin/output/ex01_02/3.find_bg_fg"
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Classify patches as background or foreground')
+    parser.add_argument('--base_dir', type=str, required=True,
+                        help='Base directory containing patch data (output from Stage 2)')
+    parser.add_argument('--output_dir', type=str, required=True,
+                        help='Output directory for results')
+    parser.add_argument('--file_id', type=str, default=None,
+                        help='Specific file_id to process (if not specified, processes all)')
+    parser.add_argument('--std_threshold', type=float, default=40.0,
+                        help='Standard deviation threshold for background classification (default: 40.0)')
+    parser.add_argument('--edge_threshold', type=float, default=15.0,
+                        help='Edge intensity threshold for background classification (default: 15.0)')
+    parser.add_argument('--output_suffix', type=str, default='test',
+                        help='Suffix for output files (default: test)')
+    
+    args = parser.parse_args()
+    
+    # Set base folder and output directory
+    base_dir = args.base_dir
+    output_dir = args.output_dir
+    
+    # Validate base directory
+    if not os.path.exists(base_dir):
+        raise ValueError(f"Base directory does not exist: {base_dir}")
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
     # Read Excel file
     excel_path = os.path.join(base_dir, "bboxes_patch_20x.xlsx")
+    if not os.path.exists(excel_path):
+        raise ValueError(f"Excel file not found: {excel_path}")
+    
     df = pd.read_excel(excel_path, engine='openpyxl')
     
-    # Select only images with file_id C3L-00967-21
-    test_df = df[df['file_id'] == 'C3L-00967-21']
-    print(f"Processing {len(test_df)} images in total.")
-    
-    # Read mask image
-    mask_path = os.path.join(base_dir, "tissues/C3L-00967-21/tissue1_mask.jpg")
-    mask_image = cv2.imread(mask_path)
-    if mask_image is None:
-        print(f"Cannot read mask image: {mask_path}")
+    if df.empty:
+        print("No patch data found in the Excel file")
         return
+    
+    # Filter by file_id if specified
+    if args.file_id:
+        test_df = df[df['file_id'] == args.file_id]
+        if test_df.empty:
+            print(f"No patches found for file_id: {args.file_id}")
+            return
+    else:
+        test_df = df
+    
+    print(f"Processing {len(test_df)} patches from {test_df['file_id'].nunique()} files")
     
     # Set thresholds
     thresholds = {
-        'std': 40,  # Standard deviation threshold
-        'edge': 15  # Edge intensity threshold
+        'std': args.std_threshold,
+        'edge': args.edge_threshold
     }
     
-    # List to store results
-    results = []
-    error_count = 0
+    print(f"Using thresholds - std: {thresholds['std']}, edge: {thresholds['edge']}")
     
-    # Process each image
-    for idx, row in tqdm(test_df.iterrows(), total=len(test_df), desc="Processing images"):
-        try:
-            # Generate image path
-            image_path = os.path.join(base_dir, row['filepath_img'])
-            
-            # Read image
-            image = cv2.imread(str(image_path))
-            if image is None:
-                print(f"Cannot read image: {image_path}")
+    # Process each file_id separately
+    all_results = []
+    
+    for file_id in test_df['file_id'].unique():
+        file_df = test_df[test_df['file_id'] == file_id]
+        
+        # Find mask image for this file_id
+        mask_path = None
+        for tissue_no in file_df['tissue_no'].unique():
+            potential_mask_path = os.path.join(base_dir, "tissues", file_id, f"tissue{tissue_no}_mask.jpg")
+            if os.path.exists(potential_mask_path):
+                mask_path = potential_mask_path
+                break
+        
+        if mask_path is None:
+            print(f"Warning: No mask image found for {file_id}")
+            continue
+        
+        # Read mask image
+        mask_image = cv2.imread(mask_path)
+        if mask_image is None:
+            print(f"Cannot read mask image: {mask_path}")
+            continue
+        
+        print(f"Processing {file_id} with {len(file_df)} patches")
+        
+        # Results for this file
+        file_results = []
+        error_count = 0
+        
+        # Process each patch for this file
+        for idx, row in tqdm(file_df.iterrows(), total=len(file_df), desc=f"Processing {file_id}"):
+            try:
+                # Generate image path
+                image_path = os.path.join(base_dir, row['filepath_img'])
+                
+                # Read image
+                image = cv2.imread(str(image_path))
+                if image is None:
+                    print(f"Cannot read image: {image_path}")
+                    error_count += 1
+                    continue
+                    
+                # Calculate image statistics
+                stats = calculate_image_statistics(image)
+                
+                # Determine if background
+                is_bg = is_background(stats, thresholds)
+                
+                # Save results
+                file_results.append({
+                    'file_id': row['file_id'],
+                    'tissue_no': row['tissue_no'],
+                    'patch_no': row['patch_no'],
+                    'image_path': image_path,
+                    'mean': stats['mean'],
+                    'std': stats['std'],
+                    'edge_intensity': stats['edge_intensity'],
+                    'is_background': is_bg
+                })
+                
+                # Display text on mask image if foreground
+                if not is_bg:
+                    x, y = row['x'], row['y']
+                    put_text_with_outline(mask_image, "FG", (int(x), int(y)), 
+                                        font_scale=1.0, thickness=2)
+                
+            except Exception as e:
+                print(f"Error occurred while processing image: {image_path}")
+                print(f"Error details: {str(e)}")
                 error_count += 1
                 continue
-                
-            # Calculate image statistics
-            stats = calculate_image_statistics(image)
-            
-            # Determine if background
-            is_bg = is_background(stats, thresholds)
-            
-            # Save results
-            results.append({
-                'file_id': row['file_id'],
-                'tissue_no': row['tissue_no'],
-                'patch_no': row['patch_no'],
-                'image_path': image_path,
-                'mean': stats['mean'],
-                'std': stats['std'],
-                'edge_intensity': stats['edge_intensity'],
-                'is_background': is_bg
-            })
-            
-            # Display text on mask image if foreground
-            if not is_bg:
-                x, y = row['x'], row['y']
-                put_text_with_outline(mask_image, "FG", (int(x), int(y)), 
-                                    font_scale=1.0, thickness=2)
-            
-        except Exception as e:
-            print(f"Error occurred while processing image: {image_path}")
-            print(f"Error details: {str(e)}")
-            error_count += 1
-            continue
+        
+        # Save mask image for this file
+        output_mask_path = os.path.join(output_dir, f"{file_id}_mask_with_fg.jpg")
+        cv2.imwrite(output_mask_path, mask_image)
+        
+        # Add file results to all results
+        all_results.extend(file_results)
+        
+        print(f"Completed {file_id}: {len(file_results)} patches processed, {error_count} errors")
     
-    # Convert results to DataFrame
-    results_df = pd.DataFrame(results)
+    # Convert all results to DataFrame
+    results_df = pd.DataFrame(all_results)
     
     if len(results_df) == 0:
-        print("No images were processed.")
+        print("No patches were processed successfully")
         return
     
     # Output results
@@ -192,17 +258,12 @@ def main():
     fg_count = len(results_df) - bg_count
     print(f"\nBackground images: {bg_count} ({bg_count/len(results_df)*100:.1f}%)")
     print(f"Foreground images: {fg_count} ({fg_count/len(results_df)*100:.1f}%)")
-    print(f"Processing failures: {error_count}")
-    
-    # Save mask image
-    output_mask_path = os.path.join(output_dir, "tissue1_mask_with_fg.jpg")
-    cv2.imwrite(output_mask_path, mask_image)
-    print(f"\nMask image has been saved to {output_mask_path}.")
     
     # Save results as Excel file
-    output_path = os.path.join(output_dir, "bboxes_bg_fg_test.xlsx")
+    output_path = os.path.join(output_dir, f"bboxes_bg_fg_{args.output_suffix}.xlsx")
     results_df.to_excel(output_path, index=False)
-    print(f"Results have been saved to {output_path}.")
+    print(f"\nResults have been saved to {output_path}")
+    print(f"Mask images have been saved to {output_dir}")
 
 if __name__ == "__main__":
     main()
